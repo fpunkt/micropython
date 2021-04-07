@@ -122,6 +122,8 @@
 #define MICROPY_PY_THREAD_GIL_VM_DIVISOR    (32)
 
 // extended modules
+#define MICROPY_HW_ENABLE_CAN               (1)
+
 #ifndef MICROPY_PY_BLUETOOTH
 #define MICROPY_PY_BLUETOOTH                (1)
 #define MICROPY_PY_BLUETOOTH_ENABLE_CENTRAL_MODE (1)
