@@ -22,6 +22,11 @@ extern const mp_obj_type_t machine_uart_type;
 extern const mp_obj_type_t machine_rtc_type;
 extern const mp_obj_type_t machine_sdcard_type;
 
+ #if MICROPY_HW_ENABLE_CAN
+extern const mp_obj_type_t machine_can_type;
+#endif
+
+
 void machine_init(void);
 void machine_deinit(void);
 void machine_pins_init(void);
