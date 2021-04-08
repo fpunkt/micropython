@@ -437,6 +437,34 @@ STATIC void machine_hw_can_print(const mp_print_t *print, mp_obj_t self_in, mp_p
     }
 }
 
+static mp_obj_t _receive_callback;
+
+static void trigger_mp_schedule() {
+    if (_receive_callback == 0) return;
+    if (_receive_callback == mp_const_none) return;
+    mp_sched_schedule(_receive_callback, mp_const_none);
+    mp_hal_wake_main_task_from_isr();
+}
+
+// NOTE: you must define this in twai.c
+// Add to the end of twai_handle_rx_buffer_frames:
+//     if (twai_receive_isr_hook != 0) (*twai_receive_isr_hook)();
+
+extern void (*twai_receive_isr_hook)();
+
+static void _machine_hw_can_remove_isr_callback() {
+    twai_receive_isr_hook = 0;
+    _receive_callback = 0;
+}
+
+STATIC mp_obj_t machine_hw_can_set_callback(mp_obj_t self_in, mp_obj_t value_in) {
+    //machine_can_obj_t *self = self_in;
+    _receive_callback = value_in;
+    return mp_const_none;
+}
+MP_DEFINE_CONST_FUN_OBJ_2(can_set_callback_obj, machine_hw_can_set_callback);
+
+
 // init(tx, rx, baudrate, mode = TWAI_MODE_NORMAL, tx_queue = 2, rx_queue = 5)
 STATIC mp_obj_t machine_hw_can_init(size_t n_args, const mp_obj_t *args, mp_map_t *kw_args) {
     machine_can_obj_t *self = MP_OBJ_TO_PTR(args[0]);
@@ -450,6 +478,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_hw_can_init_obj, 4, machine_hw_can_ini
 
 // deinit()
 STATIC mp_obj_t machine_hw_can_deinit(const mp_obj_t self_in) {
+    _machine_hw_can_remove_isr_callback();
     const machine_can_obj_t *self = &machine_can_obj;
     if (self->config->initialized != true) {
         ESP_LOGW(DEVICE_NAME, "Device is not initialized");
@@ -466,6 +495,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_hw_can_deinit_obj, machine_hw_can_deini
 // If no arguments are provided, the initialized object will be returned
 mp_obj_t machine_hw_can_make_new(const mp_obj_type_t *type, size_t n_args,
                                  size_t n_kw, const mp_obj_t *args) {
+    _machine_hw_can_remove_isr_callback();
     // check arguments
     mp_arg_check_num(n_args, n_kw, 1, MP_OBJ_FUN_ARGS_MAX, true);
     if (mp_obj_is_int(args[0]) != true) {
@@ -607,7 +637,7 @@ STATIC mp_obj_t machine_hw_can_init_helper(machine_can_obj_t *self, size_t n_arg
             self->config->initialized = true;
         }
     }
-
+    twai_receive_isr_hook = trigger_mp_schedule;
     return mp_const_none;
 }
 
@@ -617,6 +647,8 @@ STATIC const mp_rom_map_elem_t machine_can_locals_dict_table[] = {
     // CAN_ATTRIBUTES
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_CAN) },
     // Micropython Generic API
+    { MP_ROM_QSTR(MP_QSTR_callback), MP_ROM_PTR(&can_set_callback_obj) },
+
     { MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&machine_hw_can_init_obj) },
     { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&machine_hw_can_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR_restart), MP_ROM_PTR(&machine_hw_can_restart_obj) },
