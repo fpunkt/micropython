@@ -40,7 +40,7 @@ This driver is based on
 
 // ESP-IDF includes
 #include "soc/dport_reg.h"
-#include "driver/can.h"
+#include "driver/twai.h"
 #include "esp_err.h"
 #include "esp_log.h"
 
@@ -48,32 +48,29 @@ This driver is based on
 
 #define DEVICE_NAME "CAN"
 
-#define CAN_BAUDRATE_25k 25
-#define CAN_BAUDRATE_50k 50
-#define CAN_BAUDRATE_100k 100
-#define CAN_BAUDRATE_125k 125
-#define CAN_BAUDRATE_250k 250
-#define CAN_BAUDRATE_500k 500
-#define CAN_BAUDRATE_800k 800
-#define CAN_BAUDRATE_1M 1000
 
-#define ESP_CHECK_ERROR(status) if (status != ESP_OK) mp_raise_OSError(-abs(status))
+// Check for errors
+// Allow passing of function calls (argument is evaluated only once)
+#define ESP_CHECK_ERROR(status) { \
+    esp_err_t e = status; \
+    if (e != ESP_OK) mp_raise_OSError(-abs(e)); \
+}
 
-typedef enum _filter_mode_t {
+typedef enum filter_mode_e {
     FILTER_RAW_SINGLE = 0,
     FILTER_RAW_DUAL,
     FILTER_ADDRESS
 } filter_mode_t;
 
-typedef struct _machine_can_config_t {
-    can_timing_config_t timing;
-    can_filter_config_t filter;
-    can_general_config_t general;
+typedef struct machine_can_config_s {
+    twai_timing_config_t timing;
+    twai_filter_config_t filter;
+    twai_general_config_t general;
     uint16_t baudrate;
     bool initialized;
 } machine_can_config_t;
 
-typedef struct _machine_can_obj_t {
+typedef struct machine_can_obj_s {
     mp_obj_base_t base;
     machine_can_config_t *config;
     mp_obj_t rxcallback;
@@ -85,32 +82,28 @@ typedef struct _machine_can_obj_t {
     uint16_t num_bus_off;
 } machine_can_obj_t;
 
-typedef enum _rx_state_t {
+typedef enum rx_state_e {
     RX_STATE_FIFO_EMPTY = 0,
     RX_STATE_MESSAGE_PENDING,
     RX_STATE_FIFO_FULL,
     RX_STATE_FIFO_OVERFLOW,
 } rx_state_t;
 
-
-// forward refrerences
-
-static machine_can_obj_t machine_can_obj;
-
-// Default baudrate: 500kb
-#define CAN_DEFAULT_PRESCALER (8)
+// TWAI_TIMING_CONFIG_125KBITS()   {.brp = 32, .tseg_1 = 15, .tseg_2 = 4, .sjw = 3, .triple_sampling = false}
+#define CAN_DEFAULT_PRESCALER (32)
 #define CAN_DEFAULT_SJW (3)
 #define CAN_DEFAULT_BS1 (15)
 #define CAN_DEFAULT_BS2 (4)
 
-// Internal Functions
+// forward refrerences
+static machine_can_obj_t machine_can_obj;
 mp_obj_t machine_hw_can_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args);
 STATIC mp_obj_t machine_hw_can_init_helper(machine_can_obj_t *self, size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args);
 STATIC void machine_hw_can_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind);
 
-STATIC can_status_info_t _machine_hw_can_get_status() {
-    can_status_info_t status;
-    uint32_t err_code = can_get_status_info(&status);
+STATIC twai_status_info_t _machine_hw_can_get_status() {
+    twai_status_info_t status;
+    uint32_t err_code = twai_get_status_info(&status);
     if (err_code != ESP_OK) {
         mp_raise_OSError(-err_code);
     }
@@ -118,8 +111,7 @@ STATIC can_status_info_t _machine_hw_can_get_status() {
 }
 
 STATIC void _machine_hw_can_set_filter(machine_can_obj_t *self, uint32_t addr, uint32_t mask, uint8_t bank, bool rtr) {
-    //Check if bank is allowed
-    if ( bank < 0 && bank > ((self->extframe && self->config->filter.single_filter) ? 0 : 1 )) {
+    if (bank > ((self->extframe && self->config->filter.single_filter) ? 0 : 1 )) {
         mp_raise_ValueError("CAN filter parameter error");
     }
     uint32_t preserve_mask;
@@ -152,31 +144,26 @@ STATIC void _machine_hw_can_set_filter(machine_can_obj_t *self, uint32_t addr, u
     self->config->filter.acceptance_mask |= mask;
 }
 
-// Force a software restart of the controller, to allow transmission after a bus error
 STATIC mp_obj_t machine_hw_can_restart(mp_obj_t self_in) {
-    uint32_t status = can_initiate_recovery();
-    if (status != ESP_OK) {
-        mp_raise_OSError(-status);
-    }
+    ESP_CHECK_ERROR(twai_initiate_recovery());
     mp_hal_delay_ms(200);
-    status = can_start();
-    if (status != ESP_OK) {
-        mp_raise_OSError(-status);
-    }
+    ESP_CHECK_ERROR(twai_start());
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_hw_can_restart_obj, machine_hw_can_restart);
 
+// TODO: rename
 // any() - return `True` if any message waiting, else `False`
 STATIC mp_obj_t machine_hw_can_any(mp_obj_t self_in) {
-    can_status_info_t status = _machine_hw_can_get_status();
+    twai_status_info_t status = _machine_hw_can_get_status();
     return mp_obj_new_bool((status.msgs_to_rx) > 0);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_hw_can_any_obj, machine_hw_can_any);
 
+
 // Get the state of the controller
 STATIC mp_obj_t machine_hw_can_state(mp_obj_t self_in) {
-    can_status_info_t status = _machine_hw_can_get_status();
+    twai_status_info_t status = _machine_hw_can_get_status();
     return mp_obj_new_int(status.state);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_hw_can_state_obj, machine_hw_can_state);
@@ -196,7 +183,7 @@ STATIC mp_obj_t machine_hw_can_info(size_t n_args, const mp_obj_t *args) {
             mp_raise_ValueError(NULL);
         }
     }
-    can_status_info_t status = _machine_hw_can_get_status();
+    twai_status_info_t status = _machine_hw_can_get_status();
     list->items[0] = MP_OBJ_NEW_SMALL_INT(status.tx_error_counter);
     list->items[1] = MP_OBJ_NEW_SMALL_INT(status.rx_error_counter);
     list->items[2] = MP_OBJ_NEW_SMALL_INT(self->num_error_warning);
@@ -212,7 +199,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(machine_hw_can_info_obj, 1, 2, machin
 // Get Alert info
 STATIC mp_obj_t machine_hw_can_alert(mp_obj_t self_in) {
     uint32_t alerts;
-    uint32_t status = can_read_alerts(&alerts, 0);
+    uint32_t status = twai_read_alerts(&alerts, 0);
     if (status != ESP_OK) {
         mp_raise_OSError(-status);
     }
@@ -222,13 +209,13 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_hw_can_alert_obj, machine_hw_can_alert)
 
 // Clear TX Queue
 STATIC mp_obj_t machine_hw_can_clear_tx_queue(mp_obj_t self_in) {
-    return mp_obj_new_bool(can_clear_transmit_queue() == ESP_OK);
+    return mp_obj_new_bool(twai_clear_transmit_queue() == ESP_OK);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_hw_can_clear_tx_queue_obj, machine_hw_can_clear_tx_queue);
 
 // Clear RX Queue
 STATIC mp_obj_t machine_hw_can_clear_rx_queue(mp_obj_t self_in) {
-    return mp_obj_new_bool(can_clear_receive_queue() == ESP_OK);
+    return mp_obj_new_bool(twai_clear_receive_queue() == ESP_OK);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_hw_can_clear_rx_queue_obj, machine_hw_can_clear_rx_queue);
 
@@ -260,26 +247,26 @@ STATIC mp_obj_t machine_hw_can_send(size_t n_args, const mp_obj_t *pos_args, mp_
     if (length > 8) {
         mp_raise_ValueError("CAN data field too long");
     }
-    uint8_t flags = (args[ARG_rtr].u_bool ? CAN_MSG_FLAG_RTR : CAN_MSG_FLAG_NONE);
+    uint8_t flags = (args[ARG_rtr].u_bool ? TWAI_MSG_FLAG_RTR : TWAI_MSG_FLAG_NONE);
     uint32_t id = args[ARG_id].u_int;
     if (self->extframe) {
-        flags += CAN_MSG_FLAG_EXTD;
+        flags += TWAI_MSG_FLAG_EXTD;
         id &= 0x1FFFFFFF;
     } else {
         id &= 0x7FF;
     }
     if (self->loopback) {
-        flags += CAN_MSG_FLAG_SELF;
+        flags += TWAI_MSG_FLAG_SELF;
     }
-    can_message_t tx_msg = { .data_length_code = length,
+    twai_message_t tx_msg = { .data_length_code = length,
                              .identifier = id,
                              .flags = flags
                            };
     for (uint8_t i = 0; i < length; i++) {
         tx_msg.data[i] = mp_obj_get_int(items[i]);
     }
-    if (_machine_hw_can_get_status().state == CAN_STATE_RUNNING) {
-        int status = can_transmit(&tx_msg, args[ARG_timeout].u_int);
+    if (_machine_hw_can_get_status().state == TWAI_STATE_RUNNING) {
+        int status = twai_transmit(&tx_msg, args[ARG_timeout].u_int);
         if (status != ESP_OK) {
             mp_raise_OSError(-status);
         }
@@ -307,8 +294,8 @@ STATIC mp_obj_t machine_hw_can_recv(size_t n_args, const mp_obj_t *pos_args, mp_
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    can_message_t rx_message;
-    int status = can_receive(&rx_message, args[ARG_timeout].u_int);
+    twai_message_t rx_message;
+    int status = twai_receive(&rx_message, args[ARG_timeout].u_int);
     if (status != ESP_OK) {
         mp_raise_OSError(-status);
     }
@@ -343,7 +330,7 @@ STATIC mp_obj_t machine_hw_can_recv(size_t n_args, const mp_obj_t *pos_args, mp_
         memcpy(mv->items, rx_message.data, rx_message.data_length_code);
     }
     items[0] = MP_OBJ_NEW_SMALL_INT(rx_message.identifier);
-    items[1] = mp_obj_new_bool(rx_message.flags && CAN_MSG_FLAG_RTR > 0);
+    items[1] = mp_obj_new_bool(rx_message.flags && TWAI_MSG_FLAG_RTR > 0);
     items[2] = 0;
     return ret_obj;
 }
@@ -355,13 +342,13 @@ STATIC mp_obj_t machine_hw_can_clearfilter(mp_obj_t self_in) {
     self->config->filter.single_filter = self->extframe;
     self->config->filter.acceptance_code = 0;
     self->config->filter.acceptance_mask = 0xFFFFFFFF;
-    ESP_CHECK_ERROR(can_stop());
-    ESP_CHECK_ERROR(can_driver_uninstall());
-    ESP_CHECK_ERROR(can_driver_install(
+    ESP_CHECK_ERROR(twai_stop());
+    ESP_CHECK_ERROR(twai_driver_uninstall());
+    ESP_CHECK_ERROR(twai_driver_install(
                          &self->config->general,
                          &self->config->timing,
                          &self->config->filter));
-    ESP_CHECK_ERROR(can_start());
+    ESP_CHECK_ERROR(twai_start());
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_hw_can_clearfilter_obj, machine_hw_can_clearfilter);
@@ -407,13 +394,13 @@ STATIC mp_obj_t machine_hw_can_setfilter(size_t n_args, const mp_obj_t *pos_args
         self->config->filter.single_filter = self->extframe;
         _machine_hw_can_set_filter(self, id, mask, args[ARG_bank].u_int, args[ARG_rtr].u_int);
     }
-    ESP_CHECK_ERROR( can_stop() );
-    ESP_CHECK_ERROR( can_driver_uninstall() );
-    ESP_CHECK_ERROR( can_driver_install(
+    ESP_CHECK_ERROR(twai_stop() );
+    ESP_CHECK_ERROR(twai_driver_uninstall() );
+    ESP_CHECK_ERROR(twai_driver_install(
                           &self->config->general,
                           &self->config->timing,
                           &self->config->filter) );
-    ESP_CHECK_ERROR( can_start() );
+    ESP_CHECK_ERROR(twai_start() );
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_hw_can_setfilter_obj, 1, machine_hw_can_setfilter);
@@ -424,13 +411,13 @@ STATIC void machine_hw_can_print(const mp_print_t *print, mp_obj_t self_in, mp_p
         qstr mode;
         switch (self->config->general.mode)
         {
-        case CAN_MODE_LISTEN_ONLY:
+        case TWAI_MODE_LISTEN_ONLY:
             mode = MP_QSTR_LISTEN;
             break;
-        case CAN_MODE_NO_ACK:
+        case TWAI_MODE_NO_ACK:
             mode = MP_QSTR_NO_ACK;
             break;
-        case CAN_MODE_NORMAL:
+        case TWAI_MODE_NORMAL:
             mode = MP_QSTR_NORMAL;
             break;
         default:
@@ -450,7 +437,7 @@ STATIC void machine_hw_can_print(const mp_print_t *print, mp_obj_t self_in, mp_p
     }
 }
 
-// init(tx, rx, baudrate, mode = CAN_MODE_NORMAL, tx_queue = 2, rx_queue = 5)
+// init(tx, rx, baudrate, mode = TWAI_MODE_NORMAL, tx_queue = 2, rx_queue = 5)
 STATIC mp_obj_t machine_hw_can_init(size_t n_args, const mp_obj_t *args, mp_map_t *kw_args) {
     machine_can_obj_t *self = MP_OBJ_TO_PTR(args[0]);
     if (self->config->initialized) {
@@ -468,14 +455,8 @@ STATIC mp_obj_t machine_hw_can_deinit(const mp_obj_t self_in) {
         ESP_LOGW(DEVICE_NAME, "Device is not initialized");
         return mp_const_none;
     }
-    uint32_t status = can_stop();
-    if (status != ESP_OK) {
-        mp_raise_OSError(-status);
-    }
-    status = can_driver_uninstall();
-    if (status != ESP_OK) {
-        mp_raise_OSError(-status);
-    }
+    ESP_CHECK_ERROR(twai_stop());
+    ESP_CHECK_ERROR(twai_driver_uninstall());
     self->config->initialized = false;
     return mp_const_none;
 }
@@ -513,6 +494,8 @@ mp_obj_t machine_hw_can_make_new(const mp_obj_type_t *type, size_t n_args,
     return MP_OBJ_FROM_PTR(self);
 }
 
+
+
 // init(mode, extframe=False, baudrate=500, *)
 STATIC mp_obj_t machine_hw_can_init_helper(machine_can_obj_t *self, size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum {
@@ -530,7 +513,7 @@ STATIC mp_obj_t machine_hw_can_init_helper(machine_can_obj_t *self, size_t n_arg
         ARG_auto_restart
     };
     static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_mode, MP_ARG_REQUIRED | MP_ARG_INT, {.u_int = CAN_MODE_NORMAL} },
+        { MP_QSTR_mode, MP_ARG_REQUIRED | MP_ARG_INT, {.u_int = TWAI_MODE_NORMAL} },
         { MP_QSTR_extframe, MP_ARG_BOOL, {.u_bool = false} },
         { MP_QSTR_baudrate, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
         { MP_QSTR_prescaler, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = CAN_DEFAULT_PRESCALER} },
@@ -550,26 +533,27 @@ STATIC mp_obj_t machine_hw_can_init_helper(machine_can_obj_t *self, size_t n_arg
     self->config->general.mode = args[ARG_mode].u_int & 0x0F;
     self->config->general.tx_io = args[ARG_tx_io].u_int;
     self->config->general.rx_io = args[ARG_rx_io].u_int;
-    self->config->general.clkout_io = CAN_IO_UNUSED;
-    self->config->general.bus_off_io = CAN_IO_UNUSED;
+    self->config->general.clkout_io = TWAI_IO_UNUSED;
+    self->config->general.bus_off_io = TWAI_IO_UNUSED;
     self->config->general.tx_queue_len = args[ARG_tx_queue].u_int;
     self->config->general.rx_queue_len = args[ARG_rx_queue].u_int;
-    self->config->general.alerts_enabled = CAN_ALERT_AND_LOG || CAN_ALERT_BELOW_ERR_WARN || CAN_ALERT_ERR_ACTIVE || CAN_ALERT_BUS_RECOVERED ||
-                                           CAN_ALERT_ABOVE_ERR_WARN || CAN_ALERT_BUS_ERROR || CAN_ALERT_ERR_PASS || CAN_ALERT_BUS_OFF;
+    self->config->general.alerts_enabled = TWAI_ALERT_AND_LOG || TWAI_ALERT_BELOW_ERR_WARN || TWAI_ALERT_ERR_ACTIVE || TWAI_ALERT_BUS_RECOVERED ||
+                                           TWAI_ALERT_ABOVE_ERR_WARN || TWAI_ALERT_BUS_ERROR || TWAI_ALERT_ERR_PASS || TWAI_ALERT_BUS_OFF;
     self->config->general.clkout_divider = 0;
     self->loopback = ((args[ARG_mode].u_int & 0x10) > 0);
     self->extframe = args[ARG_extframe].u_bool;
     if (args[ARG_auto_restart].u_bool) {
         mp_raise_NotImplementedError("Auto-restart not supported");
     }
-    can_filter_config_t f_config = CAN_FILTER_CONFIG_ACCEPT_ALL();
+    twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
     self->config->filter.single_filter = self->extframe;
     self->config->filter.acceptance_code = f_config.acceptance_code;
     self->config->filter.acceptance_mask = f_config.acceptance_mask;
-    can_timing_config_t *timing;
+    twai_timing_config_t *timing;
     switch ((int)args[ARG_baudrate].u_int) {
     case 0:
-        timing = &((can_timing_config_t) {
+        // specify register values. Your are on your own ...
+        timing = &((twai_timing_config_t) {
             .brp = args[ARG_prescaler].u_int,
             .sjw = args[ARG_sjw].u_int,
             .tseg_1 = args[ARG_bs1].u_int,
@@ -577,54 +561,57 @@ STATIC mp_obj_t machine_hw_can_init_helper(machine_can_obj_t *self, size_t n_arg
             .triple_sampling = false
         });
         break;
-    case CAN_BAUDRATE_25k:
-        timing = &( (can_timing_config_t) CAN_TIMING_CONFIG_25KBITS() );
+    case 25:
+        timing = &( (twai_timing_config_t) TWAI_TIMING_CONFIG_25KBITS() );
         break;
-    case CAN_BAUDRATE_50k:
-        timing = &( (can_timing_config_t) CAN_TIMING_CONFIG_50KBITS() );
+    case 50:
+        timing = &( (twai_timing_config_t) TWAI_TIMING_CONFIG_50KBITS() );
         break;
-    case CAN_BAUDRATE_100k:
-        timing = &( (can_timing_config_t) CAN_TIMING_CONFIG_100KBITS() );
+    case 100:
+        timing = &( (twai_timing_config_t) TWAI_TIMING_CONFIG_100KBITS() );
         break;
-    case CAN_BAUDRATE_125k:
-        timing = &( (can_timing_config_t) CAN_TIMING_CONFIG_125KBITS() );
+    case 125:
+        timing = &( (twai_timing_config_t) TWAI_TIMING_CONFIG_125KBITS() );
         break;
-    case CAN_BAUDRATE_250k:
-        timing = &( (can_timing_config_t) CAN_TIMING_CONFIG_250KBITS() );
+    case 250:
+        timing = &( (twai_timing_config_t) TWAI_TIMING_CONFIG_250KBITS() );
         break;
-    case CAN_BAUDRATE_500k:
-        timing = &( (can_timing_config_t) CAN_TIMING_CONFIG_500KBITS() );
+    case 500:
+        timing = &( (twai_timing_config_t) TWAI_TIMING_CONFIG_500KBITS() );
         break;
-    case CAN_BAUDRATE_800k:
-        timing = &( (can_timing_config_t) CAN_TIMING_CONFIG_800KBITS() );
+    case 800:
+        timing = &( (twai_timing_config_t) TWAI_TIMING_CONFIG_800KBITS() );
         break;
-    case CAN_BAUDRATE_1M:
-        timing = &( (can_timing_config_t) CAN_TIMING_CONFIG_1MBITS() );
+    case 1000:
+        timing = &( (twai_timing_config_t) TWAI_TIMING_CONFIG_1MBITS() );
         break;
     default:
-        mp_raise_ValueError("Unable to set baudrate");
+        mp_raise_ValueError("Unable to set baudrate, use one of 25, 50, 100, 125, 250, 500, 800, 1000");
         self->config->baudrate = 0;
         return mp_const_none;
     }
     self->config->timing = *timing;
     self->config->baudrate = args[ARG_baudrate].u_int;
 
-    uint32_t status = can_driver_install(
+    uint32_t status = twai_driver_install(
                           &self->config->general,
                           &self->config->timing,
-                          &(can_filter_config_t) CAN_FILTER_CONFIG_ACCEPT_ALL() );
+                          &(twai_filter_config_t) TWAI_FILTER_CONFIG_ACCEPT_ALL() );
     if (status != ESP_OK) {
         mp_raise_OSError(-status);
     } else {
-        status = can_start();
+        status = twai_start();
         if (status != ESP_OK) {
             mp_raise_OSError(-status);
         } else {
             self->config->initialized = true;
         }
     }
+
     return mp_const_none;
 }
+
+
 
 STATIC const mp_rom_map_elem_t machine_can_locals_dict_table[] = {
     // CAN_ATTRIBUTES
@@ -645,16 +632,16 @@ STATIC const mp_rom_map_elem_t machine_can_locals_dict_table[] = {
     { MP_OBJ_NEW_QSTR(MP_QSTR_clear_rx_queue), MP_ROM_PTR(&machine_hw_can_clear_rx_queue_obj) },
     { MP_OBJ_NEW_QSTR(MP_QSTR_get_alerts), MP_ROM_PTR(&machine_hw_can_alert_obj) },
     // CAN_MODE
-    { MP_ROM_QSTR(MP_QSTR_NORMAL), MP_ROM_INT(CAN_MODE_NORMAL) },
-    { MP_ROM_QSTR(MP_QSTR_LOOPBACK), MP_ROM_INT(CAN_MODE_NORMAL | 0x10) },
-    { MP_ROM_QSTR(MP_QSTR_SILENT), MP_ROM_INT(CAN_MODE_NO_ACK) },
-    { MP_ROM_QSTR(MP_QSTR_SILENT_LOOPBACK), MP_ROM_INT(CAN_MODE_NO_ACK | 0x10) },
-    { MP_ROM_QSTR(MP_QSTR_LISTEN_ONLY), MP_ROM_INT(CAN_MODE_LISTEN_ONLY) },
+    { MP_ROM_QSTR(MP_QSTR_NORMAL), MP_ROM_INT(TWAI_MODE_NORMAL) },
+    { MP_ROM_QSTR(MP_QSTR_LOOPBACK), MP_ROM_INT(TWAI_MODE_NORMAL | 0x10) },
+    { MP_ROM_QSTR(MP_QSTR_SILENT), MP_ROM_INT(TWAI_MODE_NO_ACK) },
+    { MP_ROM_QSTR(MP_QSTR_SILENT_LOOPBACK), MP_ROM_INT(TWAI_MODE_NO_ACK | 0x10) },
+    { MP_ROM_QSTR(MP_QSTR_LISTEN_ONLY), MP_ROM_INT(TWAI_MODE_LISTEN_ONLY) },
     // CAN_STATE
-    { MP_ROM_QSTR(MP_QSTR_STOPPED), MP_ROM_INT(CAN_STATE_STOPPED) },
-    { MP_ROM_QSTR(MP_QSTR_ERROR_ACTIVE), MP_ROM_INT(CAN_STATE_RUNNING) },
-    { MP_ROM_QSTR(MP_QSTR_BUS_OFF), MP_ROM_INT(CAN_STATE_BUS_OFF) },
-    { MP_ROM_QSTR(MP_QSTR_RECOVERING), MP_ROM_INT(CAN_STATE_RECOVERING) },
+    { MP_ROM_QSTR(MP_QSTR_STOPPED), MP_ROM_INT(TWAI_STATE_STOPPED) },
+    { MP_ROM_QSTR(MP_QSTR_ERROR_ACTIVE), MP_ROM_INT(TWAI_STATE_RUNNING) },
+    { MP_ROM_QSTR(MP_QSTR_BUS_OFF), MP_ROM_INT(TWAI_STATE_BUS_OFF) },
+    { MP_ROM_QSTR(MP_QSTR_RECOVERING), MP_ROM_INT(TWAI_STATE_RECOVERING) },
     // CAN_FILTER_MODE
     { MP_ROM_QSTR(MP_QSTR_FILTER_RAW_SINGLE), MP_ROM_INT(FILTER_RAW_SINGLE) },
     { MP_ROM_QSTR(MP_QSTR_FILTER_RAW_DUAL), MP_ROM_INT(FILTER_RAW_DUAL) },
@@ -665,9 +652,9 @@ STATIC MP_DEFINE_CONST_DICT(machine_can_locals_dict, machine_can_locals_dict_tab
 
 
 // singleton CAN device object
-machine_can_config_t can_config = { .general = CAN_GENERAL_CONFIG_DEFAULT(2, 4, 0),
-                                    .filter = CAN_FILTER_CONFIG_ACCEPT_ALL(),
-                                    .timing = CAN_TIMING_CONFIG_25KBITS(),
+machine_can_config_t can_config = { .general = TWAI_GENERAL_CONFIG_DEFAULT(2, 4, 0),
+                                    .filter = TWAI_FILTER_CONFIG_ACCEPT_ALL(),
+                                    .timing = TWAI_TIMING_CONFIG_25KBITS(),
                                     .initialized = false
                                   };
 
