@@ -74,6 +74,9 @@ typedef struct machine_can_obj_s {
     mp_obj_base_t base;
     machine_can_config_t *config;
     mp_obj_t rxcallback;
+    TaskHandle_t receiver_task;
+    mp_obj_t received_object;
+    mp_obj_t *received_object_items;
     byte rx_state;
     bool extframe : 1;
     bool loopback : 1;
@@ -437,29 +440,87 @@ STATIC void machine_hw_can_print(const mp_print_t *print, mp_obj_t self_in, mp_p
     }
 }
 
-static mp_obj_t _receive_callback;
 
-static void trigger_mp_schedule() {
-    if (_receive_callback == 0) return;
-    if (_receive_callback == mp_const_none) return;
-    mp_sched_schedule(_receive_callback, mp_const_none);
-    mp_hal_wake_main_task_from_isr();
+static void make_received_message(machine_can_obj_t *self) {
+    mp_obj_t ret_obj = mp_obj_new_tuple(4, NULL);
+    mp_obj_t *items = ( (mp_obj_tuple_t *)MP_OBJ_TO_PTR(ret_obj) )->items;
+    uint8_t data[8];
+    items[3] = mp_obj_new_bytes(data, 8);
+    self->received_object = ret_obj;
+    self->received_object_items = items;
 }
+
+static void receiving_task(void *self_in) {
+    ESP_LOGE(DEVICE_NAME, "receiver started with %p", self_in);
+
+    machine_can_obj_t *self = self_in;
+
+    for (;;) {
+        twai_message_t rx_message;
+        int status = twai_receive(&rx_message, 1000);
+        ESP_LOGE(DEVICE_NAME, "receive: %d", status);
+        if (status != ESP_OK) {
+            continue;
+        }
+        if (self->receiver_task == 0 || self->receiver_task == mp_const_none) {
+            ESP_LOGE(DEVICE_NAME, "no callback set, ignoring; status=%d", status);
+            continue;
+        }
+        mp_obj_t *items = self->received_object_items;
+        ESP_LOGE(DEVICE_NAME, "obj=%p, items=%p, i3=%p%p", self->received_object, items, items[3], MP_OBJ_TO_PTR(items[3]));
+        items[0] = MP_OBJ_NEW_SMALL_INT(rx_message.identifier);
+        items[1] = mp_obj_new_bool(rx_message.flags && TWAI_MSG_FLAG_RTR > 0);
+        items[2] = 0;
+        mp_obj_array_t *mv = MP_OBJ_TO_PTR(items[3]);
+        if (!(mv->typecode == (MP_OBJ_ARRAY_TYPECODE_FLAG_RW | BYTEARRAY_TYPECODE) || (mv->typecode | 0x20) == (MP_OBJ_ARRAY_TYPECODE_FLAG_RW | 'b'))) {
+            ESP_LOGE(DEVICE_NAME, "Bad item #3 in canarg, tc = 0x%02x %d", mv->typecode, mv->typecode);
+            continue;
+        }
+        mv->len = rx_message.data_length_code;
+        memcpy(mv->items, rx_message.data, rx_message.data_length_code);
+        ESP_LOGE(DEVICE_NAME, "starting schedule");
+        mp_sched_schedule(self->receiver_task, self->received_object);
+        ESP_LOGE(DEVICE_NAME, "done");
+    }
+}
+
+
+
+// static mp_obj_t _receive_callback;
+//
+// static void trigger_mp_schedule() {
+//     if (_receive_callback == 0) return;
+//     if (_receive_callback == mp_const_none) return;
+//     mp_sched_schedule(_receive_callback, mp_const_none);
+//     mp_hal_wake_main_task_from_isr();
+// }
 
 // NOTE: you must define this in twai.c
 // Add to the end of twai_handle_rx_buffer_frames:
 //     if (twai_receive_isr_hook != 0) (*twai_receive_isr_hook)();
 
-extern void (*twai_receive_isr_hook)();
-
-static void _machine_hw_can_remove_isr_callback() {
-    twai_receive_isr_hook = 0;
-    _receive_callback = 0;
-}
 
 STATIC mp_obj_t machine_hw_can_set_callback(mp_obj_t self_in, mp_obj_t value_in) {
-    //machine_can_obj_t *self = self_in;
-    _receive_callback = value_in;
+    machine_can_obj_t *self = self_in;
+    if (self->receiver_task != 0) {
+        ESP_LOGE(DEVICE_NAME, "Receiving task for %p already created at %p, ignoring", self, self->receiver_task);
+    } else {
+        const unsigned short stack_depth_in_words = 3 * configMINIMAL_STACK_SIZE;
+        int status = xTaskCreate(receiving_task,
+                                "CAN receiver",
+                                stack_depth_in_words,
+                                self, // params
+                                0, //   UBaseType_t uxPriority,
+                                &self->receiver_task);
+
+        ESP_LOGE(DEVICE_NAME, "Created Task %p for %p", self->receiver_task, self);
+        if (status != pdPASS) {
+            ESP_LOGE(DEVICE_NAME, "Cannot create task: %p", self);
+        }
+    }
+    make_received_message(self);
+    self->rxcallback = value_in;
+    ESP_LOGE(DEVICE_NAME, "Callback set to %p", value_in);
     return mp_const_none;
 }
 MP_DEFINE_CONST_FUN_OBJ_2(can_set_callback_obj, machine_hw_can_set_callback);
@@ -478,7 +539,6 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_KW(machine_hw_can_init_obj, 4, machine_hw_can_ini
 
 // deinit()
 STATIC mp_obj_t machine_hw_can_deinit(const mp_obj_t self_in) {
-    _machine_hw_can_remove_isr_callback();
     const machine_can_obj_t *self = &machine_can_obj;
     if (self->config->initialized != true) {
         ESP_LOGW(DEVICE_NAME, "Device is not initialized");
@@ -495,7 +555,6 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_hw_can_deinit_obj, machine_hw_can_deini
 // If no arguments are provided, the initialized object will be returned
 mp_obj_t machine_hw_can_make_new(const mp_obj_type_t *type, size_t n_args,
                                  size_t n_kw, const mp_obj_t *args) {
-    _machine_hw_can_remove_isr_callback();
     // check arguments
     mp_arg_check_num(n_args, n_kw, 1, MP_OBJ_FUN_ARGS_MAX, true);
     if (mp_obj_is_int(args[0]) != true) {
@@ -506,6 +565,8 @@ mp_obj_t machine_hw_can_make_new(const mp_obj_type_t *type, size_t n_args,
         nlr_raise(mp_obj_new_exception_msg_varg(&mp_type_ValueError, "CAN(%d) doesn't exist", can_idx));
     }
     machine_can_obj_t *self = &machine_can_obj;
+    ESP_LOGE(DEVICE_NAME, "Calling CAN.new with self=%p", self);
+
     if (n_args > 1 || n_kw > 0) {
         if (self->config->initialized) {
             // The caller is requesting a reconfiguration of the hardware
@@ -556,7 +617,8 @@ STATIC mp_obj_t machine_hw_can_init_helper(machine_can_obj_t *self, size_t n_arg
         { MP_QSTR_rx_queue, MP_ARG_INT, {.u_int = 5} },
         { MP_QSTR_auto_restart, MP_ARG_BOOL, {.u_bool = false} },
     };
-    // parse args
+    self->rxcallback = mp_const_none; // disable callback
+
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
     // Configure device
@@ -637,7 +699,6 @@ STATIC mp_obj_t machine_hw_can_init_helper(machine_can_obj_t *self, size_t n_arg
             self->config->initialized = true;
         }
     }
-    twai_receive_isr_hook = trigger_mp_schedule;
     return mp_const_none;
 }
 
@@ -699,7 +760,7 @@ const mp_obj_type_t machine_can_type = {
     .locals_dict = (mp_obj_dict_t *)&machine_can_locals_dict,
 };
 
-STATIC machine_can_obj_t machine_can_obj = { {&machine_can_type}, .config = &can_config };
+STATIC machine_can_obj_t machine_can_obj = { {&machine_can_type}, .config = &can_config, .receiver_task = 0 };
 
 
 // #endif // MICROPY_HW_ENABLE_CAN
