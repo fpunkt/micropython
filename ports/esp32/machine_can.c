@@ -22,7 +22,9 @@
  */
 
 /*
-This driver is based on
+For ESP32 CAN bus interface see https://docs.espressif.com/projects/esp-idf/en/v4.0/api-reference/peripherals/can.html
+(note: documentation still uses can_xxx names, we use the new (but stupid) twai_xxx names -> two wire automotive interface)
+
 */
 
 // #if MICROPY_HW_ENABLE_CAN
@@ -571,8 +573,8 @@ STATIC mp_obj_t machine_hw_can_init_helper(machine_can_obj_t *self, size_t n_arg
         { MP_QSTR_sjw, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = CAN_DEFAULT_SJW} },
         { MP_QSTR_bs1, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = CAN_DEFAULT_BS1} },
         { MP_QSTR_bs2, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = CAN_DEFAULT_BS2} },
-        { MP_QSTR_tx_io, MP_ARG_INT, {.u_int = 4} },
-        { MP_QSTR_rx_io, MP_ARG_INT, {.u_int = 2} },
+        { MP_QSTR_tx_io, MP_ARG_INT, {.u_int = 32} },
+        { MP_QSTR_rx_io, MP_ARG_INT, {.u_int = 33} },
         { MP_QSTR_tx_queue, MP_ARG_INT, {.u_int = 0} },
         { MP_QSTR_rx_queue, MP_ARG_INT, {.u_int = 5} },
         { MP_QSTR_auto_restart, MP_ARG_BOOL, {.u_bool = false} },
