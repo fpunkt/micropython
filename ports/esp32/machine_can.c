@@ -459,7 +459,7 @@ static void trigger_mp_schedule() {
 STATIC mp_obj_t machine_hw_can_set_callback(mp_obj_t self_in, mp_obj_t value_in) {
     machine_can_obj_t *self = self_in;
     self->rxcallback = value_in;
-    ESP_LOGE(DEVICE_NAME, "Callback set to %p", value_in);
+    //ESP_LOGE(DEVICE_NAME, "Callback set to %p", value_in);
     extern void (*twai_receive_isr_hook)();
     twai_receive_isr_hook = trigger_mp_schedule;
     return mp_const_none;
@@ -526,9 +526,9 @@ mp_obj_t machine_hw_can_make_new(const mp_obj_type_t *type, size_t n_args,
         nlr_raise(mp_obj_new_exception_msg_varg(&mp_type_ValueError, "CAN(%d) doesn't exist", can_idx));
     }
     machine_can_obj_t *self = &machine_can_obj;
-    ESP_LOGI(DEVICE_NAME, "Calling CAN.new with self=%p (info)", self);
-    ESP_LOGW(DEVICE_NAME, "Calling CAN.new with self=%p (warning)", self);
-    ESP_LOGE(DEVICE_NAME, "Calling CAN.new with self=%p", self);
+    // ESP_LOGI(DEVICE_NAME, "Calling CAN.new with self=%p (info)", self);
+    // ESP_LOGW(DEVICE_NAME, "Calling CAN.new with self=%p (warning)", self);
+    // ESP_LOGE(DEVICE_NAME, "Calling CAN.new with self=%p", self);
 
     if (n_args > 1 || n_kw > 0) {
         if (self->config->initialized) {
