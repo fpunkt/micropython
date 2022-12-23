@@ -29,6 +29,10 @@ For ESP32 CAN bus interface see https://docs.espressif.com/projects/esp-idf/en/v
 
 // #if MICROPY_HW_ENABLE_CAN
 
+#if 0
+#define TWAI_RECEIVE_ISR_HOOK twai_receive_isr_hook
+#endif
+
 #include <string.h>
 
 #include "py/obj.h"
@@ -460,8 +464,10 @@ STATIC mp_obj_t machine_hw_can_set_callback(mp_obj_t self_in, mp_obj_t value_in)
     machine_can_obj_t *self = self_in;
     self->rxcallback = value_in;
     //ESP_LOGE(DEVICE_NAME, "Callback set to %p", value_in);
-    extern void (*twai_receive_isr_hook)();
-    twai_receive_isr_hook = trigger_mp_schedule;
+#ifdef TWAI_RECEIVE_ISR_HOOK
+    extern void (*TWAI_RECEIVE_ISR_HOOK)();
+    TWAI_RECEIVE_ISR_HOOK = trigger_mp_schedule;
+#endif
     return mp_const_none;
 }
 MP_DEFINE_CONST_FUN_OBJ_2(can_set_callback_obj, machine_hw_can_set_callback);
@@ -510,9 +516,11 @@ mp_obj_t machine_hw_can_make_new(const mp_obj_type_t *type, size_t n_args,
         mp_raise_TypeError("bus must be a number");
     }
 
+#if TWAI_RECEIVE_ISR_HOOK
     // disable interrupt catcher
     extern void (*twai_receive_isr_hook)();
     twai_receive_isr_hook = 0;
+#endif
     machine_can_obj.rxcallback = mp_const_none;
 
 
@@ -715,13 +723,15 @@ machine_can_config_t can_config = { .general = TWAI_GENERAL_CONFIG_DEFAULT(2, 4,
                                   };
 
                                   // Python object definition
-const mp_obj_type_t machine_can_type = {
-    {&mp_type_type},
-    .name = MP_QSTR_CAN,
-    .print = machine_hw_can_print,
-    .make_new = machine_hw_can_make_new,
-    .locals_dict = (mp_obj_dict_t *)&machine_can_locals_dict,
-};
+
+MP_DEFINE_CONST_OBJ_TYPE(
+    machine_can_type,
+    MP_QSTR_CAN,
+    MP_TYPE_FLAG_NONE,
+    make_new, machine_hw_can_make_new,
+    print, machine_hw_can_print,
+    locals_dict, &machine_can_locals_dict
+);
 
 STATIC machine_can_obj_t machine_can_obj = { {&machine_can_type}, .config = &can_config, .rxcallback = 0 };
 
