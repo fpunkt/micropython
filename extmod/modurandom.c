@@ -87,8 +87,11 @@ STATIC uint32_t yasmarang_randbelow(uint32_t n) {
 
 STATIC mp_obj_t mod_urandom_getrandbits(mp_obj_t num_in) {
     int n = mp_obj_get_int(num_in);
-    if (n > 32 || n == 0) {
-        mp_raise_ValueError(NULL);
+    if (n > 32 || n < 0) {
+        mp_raise_ValueError(MP_ERROR_TEXT("bits must be 32 or less"));
+    }
+    if (n == 0) {
+        return MP_OBJ_NEW_SMALL_INT(0);
     }
     uint32_t mask = ~0;
     // Beware of C undefined behavior when shifting by >= than bit size
@@ -213,7 +216,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_2(mod_urandom_uniform_obj, mod_urandom_uniform);
 #endif // MICROPY_PY_URANDOM_EXTRA_FUNCS
 
 #if SEED_ON_IMPORT
-STATIC mp_obj_t mod_urandom___init__() {
+STATIC mp_obj_t mod_urandom___init__(void) {
     // This module may be imported by more than one name so need to ensure
     // that it's only ever seeded once.
     static bool seeded = false;
@@ -251,6 +254,8 @@ const mp_obj_module_t mp_module_urandom = {
     .base = { &mp_type_module },
     .globals = (mp_obj_dict_t *)&mp_module_urandom_globals,
 };
+
+MP_REGISTER_MODULE(MP_QSTR_urandom, mp_module_urandom);
 #endif
 
 #endif // MICROPY_PY_URANDOM

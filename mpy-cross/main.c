@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include "py/builtin.h"
 #include "py/compile.h"
 #include "py/persistentcode.h"
 #include "py/runtime.h"
@@ -72,7 +73,9 @@ STATIC int compile_and_save(const char *file, const char *output_file, const cha
         #endif
 
         mp_parse_tree_t parse_tree = mp_parse(lex, MP_PARSE_FILE_INPUT);
-        mp_raw_code_t *rc = mp_compile_to_raw_code(&parse_tree, source_name, false);
+        mp_compiled_module_t cm;
+        cm.context = m_new_obj(mp_module_context_t);
+        mp_compile_to_raw_code(&parse_tree, source_name, false, &cm);
 
         vstr_t vstr;
         vstr_init(&vstr, 16);
@@ -83,7 +86,7 @@ STATIC int compile_and_save(const char *file, const char *output_file, const cha
         } else {
             vstr_add_str(&vstr, output_file);
         }
-        mp_raw_code_save_file(rc, vstr_null_terminated_str(&vstr));
+        mp_raw_code_save_file(&cm, vstr_null_terminated_str(&vstr));
         vstr_clear(&vstr);
 
         nlr_pop();
@@ -107,9 +110,7 @@ STATIC int usage(char **argv) {
         "\n"
         "Target specific options:\n"
         "-msmall-int-bits=number : set the maximum bits used to encode a small-int\n"
-        "-mno-unicode : don't support unicode in compiled strings\n"
-        "-mcache-lookup-bc : cache map lookups in the bytecode\n"
-        "-march=<arch> : set architecture for native emitter; x86, x64, armv6, armv7m, armv7em, armv7emsp, armv7emdp, xtensa, xtensawin\n"
+        "-march=<arch> : set architecture for native emitter; x86, x64, armv6, armv6m, armv7m, armv7em, armv7emsp, armv7emdp, xtensa, xtensawin\n"
         "\n"
         "Implementation specific options:\n", argv[0]
         );
@@ -193,8 +194,6 @@ MP_NOINLINE int main_(int argc, char **argv) {
     #ifdef _WIN32
     set_fmode_binary();
     #endif
-    mp_obj_list_init(mp_sys_path, 0);
-    mp_obj_list_init(mp_sys_argv, 0);
 
     #if MICROPY_EMIT_NATIVE
     // Set default emitter options
@@ -205,21 +204,9 @@ MP_NOINLINE int main_(int argc, char **argv) {
 
     // set default compiler configuration
     mp_dynamic_compiler.small_int_bits = 31;
-    mp_dynamic_compiler.opt_cache_map_lookup_in_bytecode = 0;
-    mp_dynamic_compiler.py_builtins_str_unicode = 1;
-    #if defined(__i386__)
-    mp_dynamic_compiler.native_arch = MP_NATIVE_ARCH_X86;
-    mp_dynamic_compiler.nlr_buf_num_regs = MICROPY_NLR_NUM_REGS_X86;
-    #elif defined(__x86_64__)
-    mp_dynamic_compiler.native_arch = MP_NATIVE_ARCH_X64;
-    mp_dynamic_compiler.nlr_buf_num_regs = MAX(MICROPY_NLR_NUM_REGS_X64, MICROPY_NLR_NUM_REGS_X64_WIN);
-    #elif defined(__arm__) && !defined(__thumb2__)
-    mp_dynamic_compiler.native_arch = MP_NATIVE_ARCH_ARMV6;
-    mp_dynamic_compiler.nlr_buf_num_regs = MICROPY_NLR_NUM_REGS_ARM_THUMB_FP;
-    #else
+    // don't support native emitter unless -march is specified
     mp_dynamic_compiler.native_arch = MP_NATIVE_ARCH_NONE;
     mp_dynamic_compiler.nlr_buf_num_regs = 0;
-    #endif
 
     const char *input_file = NULL;
     const char *output_file = NULL;
@@ -232,7 +219,7 @@ MP_NOINLINE int main_(int argc, char **argv) {
                 a += 1;
             } else if (strcmp(argv[a], "--version") == 0) {
                 printf("MicroPython " MICROPY_GIT_TAG " on " MICROPY_BUILD_DATE
-                    "; mpy-cross emitting mpy v" MP_STRINGIFY(MPY_VERSION) "\n");
+                    "; mpy-cross emitting mpy v" MP_STRINGIFY(MPY_VERSION) "." MP_STRINGIFY(MPY_SUB_VERSION) "\n");
                 return 0;
             } else if (strcmp(argv[a], "-v") == 0) {
                 mp_verbose_flag++;
@@ -264,14 +251,6 @@ MP_NOINLINE int main_(int argc, char **argv) {
                     return usage(argv);
                 }
                 // TODO check that small_int_bits is within range of host's capabilities
-            } else if (strcmp(argv[a], "-mno-cache-lookup-bc") == 0) {
-                mp_dynamic_compiler.opt_cache_map_lookup_in_bytecode = 0;
-            } else if (strcmp(argv[a], "-mcache-lookup-bc") == 0) {
-                mp_dynamic_compiler.opt_cache_map_lookup_in_bytecode = 1;
-            } else if (strcmp(argv[a], "-mno-unicode") == 0) {
-                mp_dynamic_compiler.py_builtins_str_unicode = 0;
-            } else if (strcmp(argv[a], "-municode") == 0) {
-                mp_dynamic_compiler.py_builtins_str_unicode = 1;
             } else if (strncmp(argv[a], "-march=", sizeof("-march=") - 1) == 0) {
                 const char *arch = argv[a] + sizeof("-march=") - 1;
                 if (strcmp(arch, "x86") == 0) {
@@ -283,6 +262,9 @@ MP_NOINLINE int main_(int argc, char **argv) {
                 } else if (strcmp(arch, "armv6") == 0) {
                     mp_dynamic_compiler.native_arch = MP_NATIVE_ARCH_ARMV6;
                     mp_dynamic_compiler.nlr_buf_num_regs = MICROPY_NLR_NUM_REGS_ARM_THUMB_FP;
+                } else if (strcmp(arch, "armv6m") == 0) {
+                    mp_dynamic_compiler.native_arch = MP_NATIVE_ARCH_ARMV6M;
+                    mp_dynamic_compiler.nlr_buf_num_regs = MICROPY_NLR_NUM_REGS_ARM_THUMB_FP; // need to be conservative so this code can run on armv7emdp
                 } else if (strcmp(arch, "armv7m") == 0) {
                     mp_dynamic_compiler.native_arch = MP_NATIVE_ARCH_ARMV7M;
                     mp_dynamic_compiler.nlr_buf_num_regs = MICROPY_NLR_NUM_REGS_ARM_THUMB_FP;
@@ -301,6 +283,20 @@ MP_NOINLINE int main_(int argc, char **argv) {
                 } else if (strcmp(arch, "xtensawin") == 0) {
                     mp_dynamic_compiler.native_arch = MP_NATIVE_ARCH_XTENSAWIN;
                     mp_dynamic_compiler.nlr_buf_num_regs = MICROPY_NLR_NUM_REGS_XTENSAWIN;
+                } else if (strcmp(arch, "host") == 0) {
+                    #if defined(__i386__) || defined(_M_IX86)
+                    mp_dynamic_compiler.native_arch = MP_NATIVE_ARCH_X86;
+                    mp_dynamic_compiler.nlr_buf_num_regs = MICROPY_NLR_NUM_REGS_X86;
+                    #elif defined(__x86_64__) || defined(_M_X64)
+                    mp_dynamic_compiler.native_arch = MP_NATIVE_ARCH_X64;
+                    mp_dynamic_compiler.nlr_buf_num_regs = MAX(MICROPY_NLR_NUM_REGS_X64, MICROPY_NLR_NUM_REGS_X64_WIN);
+                    #elif defined(__arm__) && !defined(__thumb2__)
+                    mp_dynamic_compiler.native_arch = MP_NATIVE_ARCH_ARMV6;
+                    mp_dynamic_compiler.nlr_buf_num_regs = MICROPY_NLR_NUM_REGS_ARM_THUMB_FP;
+                    #else
+                    mp_printf(&mp_stderr_print, "unable to determine host architecture for -march=host\n");
+                    exit(1);
+                    #endif
                 } else {
                     return usage(argv);
                 }

@@ -24,11 +24,36 @@
  * THE SOFTWARE.
  */
 
+#include <string.h>
+
+#include "py/runtime.h"
+#include "py/objstr.h"
 #include "py/mphal.h"
-#include "lib/utils/pyexec.h"
+#include "shared/runtime/pyexec.h"
 #include "boardctrl.h"
+#include "powerctrl.h"
 #include "led.h"
 #include "usrsw.h"
+
+NORETURN void boardctrl_fatal_error(const char *msg) {
+    for (volatile uint delay = 0; delay < 10000000; delay++) {
+    }
+    led_state(1, 1);
+    led_state(2, 1);
+    led_state(3, 1);
+    led_state(4, 1);
+    mp_hal_stdout_tx_strn("\nFATAL ERROR:\n", 14);
+    mp_hal_stdout_tx_strn(msg, strlen(msg));
+    for (uint i = 0;;) {
+        led_toggle(((i++) & 3) + 1);
+        for (volatile uint delay = 0; delay < 10000000; delay++) {
+        }
+        if (i >= 16) {
+            // to conserve power
+            __WFI();
+        }
+    }
+}
 
 STATIC void flash_error(int n) {
     for (int i = 0; i < n; i++) {
@@ -42,40 +67,64 @@ STATIC void flash_error(int n) {
     led_state(PYB_LED_GREEN, 0);
 }
 
+#if MICROPY_HW_USES_BOOTLOADER
+void boardctrl_maybe_enter_mboot(size_t n_args, const void *args_in) {
+    const mp_obj_t *args = args_in;
+
+    if (n_args == 0 || !mp_obj_is_true(args[0])) {
+        // By default, with no args given, we enter the custom bootloader (mboot)
+        powerctrl_enter_bootloader(0x70ad0000, MBOOT_VTOR);
+    }
+
+    if (n_args == 1 && mp_obj_is_str_or_bytes(args[0])) {
+        // With a string/bytes given, pass its data to the custom bootloader
+        size_t len;
+        const char *data = mp_obj_str_get_data(args[0], &len);
+        void *mboot_region = (void *)*((volatile uint32_t *)MBOOT_VTOR);
+        memmove(mboot_region, data, len);
+        powerctrl_enter_bootloader(0x70ad0080, MBOOT_VTOR);
+    }
+}
+#endif
+
 #if !MICROPY_HW_USES_BOOTLOADER
 STATIC uint update_reset_mode(uint reset_mode) {
+    // Note: Must use HAL_Delay here as MicroPython is not yet initialised
+    // and mp_hal_delay_ms will attempt to invoke the scheduler.
+
     #if MICROPY_HW_HAS_SWITCH
     if (switch_get()) {
 
         // The original method used on the pyboard is appropriate if you have 2
         // or more LEDs.
         #if defined(MICROPY_HW_LED2)
-        for (uint i = 0; i < 3000; i++) {
-            if (!switch_get()) {
-                break;
-            }
-            mp_hal_delay_ms(20);
-            if (i % 30 == 29) {
-                if (++reset_mode > 3) {
-                    reset_mode = 1;
+        for (uint i = 0; i < 100; i++) {
+            led_state(2, reset_mode & 1);
+            led_state(3, reset_mode & 2);
+            led_state(4, reset_mode & 4);
+            for (uint j = 0; j < 30; ++j) {
+                HAL_Delay(20);
+                if (!switch_get()) {
+                    goto select_mode;
                 }
-                led_state(2, reset_mode & 1);
-                led_state(3, reset_mode & 2);
-                led_state(4, reset_mode & 4);
+            }
+            if (++reset_mode > BOARDCTRL_RESET_MODE_FACTORY_FILESYSTEM) {
+                reset_mode = BOARDCTRL_RESET_MODE_NORMAL;
             }
         }
+    select_mode:
         // flash the selected reset mode
         for (uint i = 0; i < 6; i++) {
             led_state(2, 0);
             led_state(3, 0);
             led_state(4, 0);
-            mp_hal_delay_ms(50);
+            HAL_Delay(50);
             led_state(2, reset_mode & 1);
             led_state(3, reset_mode & 2);
             led_state(4, reset_mode & 4);
-            mp_hal_delay_ms(50);
+            HAL_Delay(50);
         }
-        mp_hal_delay_ms(400);
+        HAL_Delay(400);
 
         #elif defined(MICROPY_HW_LED1)
 
@@ -88,27 +137,27 @@ STATIC uint update_reset_mode(uint reset_mode) {
                     break;
                 }
                 led_state(1, 1);
-                mp_hal_delay_ms(100);
+                HAL_Delay(100);
                 led_state(1, 0);
-                mp_hal_delay_ms(200);
+                HAL_Delay(200);
             }
-            mp_hal_delay_ms(400);
+            HAL_Delay(400);
             if (!switch_get()) {
                 break;
             }
-            if (++reset_mode > 3) {
-                reset_mode = 1;
+            if (++reset_mode > BOARDCTRL_RESET_MODE_FACTORY_FILESYSTEM) {
+                reset_mode = BOARDCTRL_RESET_MODE_NORMAL;
             }
         }
         // Flash the selected reset mode
         for (uint i = 0; i < 2; i++) {
             for (uint j = 0; j < reset_mode; j++) {
                 led_state(1, 1);
-                mp_hal_delay_ms(100);
+                HAL_Delay(100);
                 led_state(1, 0);
-                mp_hal_delay_ms(200);
+                HAL_Delay(200);
             }
-            mp_hal_delay_ms(400);
+            HAL_Delay(400);
         }
         #else
         #error Need a reset mode update method
@@ -123,7 +172,7 @@ void boardctrl_before_soft_reset_loop(boardctrl_state_t *state) {
     #if !MICROPY_HW_USES_BOOTLOADER
     // Update the reset_mode via the default
     // method which uses the board switch/button and LEDs.
-    state->reset_mode = update_reset_mode(1);
+    state->reset_mode = update_reset_mode(BOARDCTRL_RESET_MODE_NORMAL);
     #endif
 }
 
@@ -140,13 +189,23 @@ void boardctrl_top_soft_reset_loop(boardctrl_state_t *state) {
     led_state(4, 0);
 }
 
-void boardctrl_before_boot_py(boardctrl_state_t *state) {
-    state->run_boot_py = state->reset_mode == 1 || state->reset_mode == 3;
-}
+int boardctrl_run_boot_py(boardctrl_state_t *state) {
+    bool run_boot_py = state->reset_mode != BOARDCTRL_RESET_MODE_SAFE_MODE;
 
-void boardctrl_after_boot_py(boardctrl_state_t *state) {
-    if (state->run_boot_py && !state->last_ret) {
-        flash_error(4);
+    if (run_boot_py) {
+        // Run boot.py, if it exists.
+        const char *boot_py = "boot.py";
+        int ret = pyexec_file_if_exists(boot_py);
+
+        // Take action based on the execution result.
+        if (ret & PYEXEC_FORCED_EXIT) {
+            return BOARDCTRL_GOTO_SOFT_RESET_EXIT;
+        }
+        if (!ret) {
+            // There was an error, prevent main.py from running and flash LEDs.
+            state->reset_mode = BOARDCTRL_RESET_MODE_SAFE_MODE;
+            flash_error(4);
+        }
     }
 
     // Turn boot-up LEDs off
@@ -160,17 +219,34 @@ void boardctrl_after_boot_py(boardctrl_state_t *state) {
     led_state(2, 0);
     led_state(3, 0);
     led_state(4, 0);
+
+    return BOARDCTRL_CONTINUE;
 }
 
-void boardctrl_before_main_py(boardctrl_state_t *state) {
-    state->run_main_py = (state->reset_mode == 1 || state->reset_mode == 3)
+int boardctrl_run_main_py(boardctrl_state_t *state) {
+    bool run_main_py = state->reset_mode != BOARDCTRL_RESET_MODE_SAFE_MODE
         && pyexec_mode_kind == PYEXEC_MODE_FRIENDLY_REPL;
-}
 
-void boardctrl_after_main_py(boardctrl_state_t *state) {
-    if (state->run_main_py && !state->last_ret) {
-        flash_error(3);
+    if (run_main_py) {
+        // Run main.py (or what it was configured to be), if it exists.
+        const char *main_py;
+        if (MP_STATE_PORT(pyb_config_main) == MP_OBJ_NULL) {
+            main_py = "main.py";
+        } else {
+            main_py = mp_obj_str_get_str(MP_STATE_PORT(pyb_config_main));
+        }
+        int ret = pyexec_file_if_exists(main_py);
+
+        // Take action based on the execution result.
+        if (ret & PYEXEC_FORCED_EXIT) {
+            return BOARDCTRL_GOTO_SOFT_RESET_EXIT;
+        }
+        if (!ret) {
+            flash_error(3);
+        }
     }
+
+    return BOARDCTRL_CONTINUE;
 }
 
 void boardctrl_start_soft_reset(boardctrl_state_t *state) {
@@ -179,5 +255,5 @@ void boardctrl_start_soft_reset(boardctrl_state_t *state) {
 
 void boardctrl_end_soft_reset(boardctrl_state_t *state) {
     // Set reset_mode to normal boot.
-    state->reset_mode = 1;
+    state->reset_mode = BOARDCTRL_RESET_MODE_NORMAL;
 }

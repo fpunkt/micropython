@@ -46,7 +46,7 @@ Earlier versions use ``uart.send`` and ``uart.recv``.
 Constructors
 ------------
 
-.. class:: pyb.UART(bus, ...)
+.. class:: UART(bus, ...)
 
    Construct a UART object on the given bus.
    For Pyboard ``bus`` can be 1-4, 6, 'XA', 'XB', 'YA', or 'YB'.
@@ -57,7 +57,7 @@ Constructors
    the bus, if any).  If extra arguments are given, the bus is initialised.
    See ``init`` for parameters of initialisation.
 
-   The physical pins of the UART busses on Pyboard are:
+   The physical pins of the UART buses on Pyboard are:
 
      - ``UART(4)`` is on ``XA``: ``(TX, RX) = (X1, X2) = (PA0, PA1)``
      - ``UART(1)`` is on ``XB``: ``(TX, RX) = (X9, X10) = (PB6, PB7)``

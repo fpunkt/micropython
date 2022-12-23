@@ -32,6 +32,7 @@
 #include "py/mphal.h"
 #include "py/runtime.h"
 #include "extmod/modbluetooth.h"
+#include "mpbthciport.h"
 #include "rtc.h"
 #include "rfcore.h"
 
@@ -104,7 +105,7 @@ typedef struct _tl_list_node_t {
 } tl_list_node_t;
 
 typedef struct _parse_hci_info_t {
-    int (*cb_fun)(void *, const uint8_t *, size_t);
+    rfcore_ble_msg_callback_t cb_fun;
     void *cb_env;
     bool was_hci_reset_evt;
 } parse_hci_info_t;
@@ -407,16 +408,23 @@ STATIC size_t tl_parse_hci_msg(const uint8_t *buf, parse_hci_info_t *parse) {
     return len;
 }
 
-STATIC void tl_process_msg(volatile tl_list_node_t *head, unsigned int ch, parse_hci_info_t *parse) {
+STATIC size_t tl_process_msg(volatile tl_list_node_t *head, unsigned int ch, parse_hci_info_t *parse) {
     volatile tl_list_node_t *cur = head->next;
     bool added_to_free_queue = false;
+    size_t len = 0;
     while (cur != head) {
-        tl_parse_hci_msg((uint8_t *)cur->body, parse);
+        len += tl_parse_hci_msg((uint8_t *)cur->body, parse);
 
         volatile tl_list_node_t *next = tl_list_unlink(cur);
 
         // If this node is allocated from the memmgr event pool, then place it into the free buffer.
         if ((uint8_t *)cur >= ipcc_membuf_memmgr_evt_pool && (uint8_t *)cur < ipcc_membuf_memmgr_evt_pool + sizeof(ipcc_membuf_memmgr_evt_pool)) {
+            // Wait for C2 to indicate that it has finished using the free buffer,
+            // so that we can link the newly-freed memory in to this buffer.
+            // If waiting is needed then it is typically between 5 and 20 microseconds.
+            while (LL_C1_IPCC_IsActiveFlag_CHx(IPCC, IPCC_CH_MM)) {
+            }
+
             // Place memory back in free pool.
             tl_list_append(&ipcc_mem_memmgr_free_buf_queue, cur);
             added_to_free_queue = true;
@@ -429,13 +437,15 @@ STATIC void tl_process_msg(volatile tl_list_node_t *head, unsigned int ch, parse
         // Notify change in free pool.
         LL_C1_IPCC_SetFlag_CHx(IPCC, IPCC_CH_MM);
     }
+    return len;
 }
 
 // Only call this when IRQs are disabled on this channel.
-STATIC void tl_check_msg(volatile tl_list_node_t *head, unsigned int ch, parse_hci_info_t *parse) {
+STATIC size_t tl_check_msg(volatile tl_list_node_t *head, unsigned int ch, parse_hci_info_t *parse) {
+    size_t len = 0;
     if (LL_C2_IPCC_IsActiveFlag_CHx(IPCC, ch)) {
         // Process new data.
-        tl_process_msg(head, ch, parse);
+        len = tl_process_msg(head, ch, parse);
 
         // Clear receive channel (allows RF core to send more data to us).
         LL_C1_IPCC_ClearFlag_CHx(IPCC, ch);
@@ -445,6 +455,7 @@ STATIC void tl_check_msg(volatile tl_list_node_t *head, unsigned int ch, parse_h
             LL_C1_IPCC_EnableReceiveChannel(IPCC, IPCC_CH_BLE);
         }
     }
+    return len;
 }
 
 STATIC void tl_hci_cmd(uint8_t *cmd, unsigned int ch, uint8_t hdr, uint16_t opcode, const uint8_t *buf, size_t len) {
@@ -636,9 +647,9 @@ void rfcore_ble_hci_cmd(size_t len, const uint8_t *src) {
     LL_C1_IPCC_SetFlag_CHx(IPCC, ch);
 }
 
-void rfcore_ble_check_msg(int (*cb)(void *, const uint8_t *, size_t), void *env) {
+size_t rfcore_ble_check_msg(rfcore_ble_msg_callback_t cb, void *env) {
     parse_hci_info_t parse = { cb, env, false };
-    tl_check_msg(&ipcc_mem_ble_evt_queue, IPCC_CH_BLE, &parse);
+    size_t len = tl_check_msg(&ipcc_mem_ble_evt_queue, IPCC_CH_BLE, &parse);
 
     // Intercept HCI_Reset events and reconfigure the controller following the reset
     if (parse.was_hci_reset_evt) {
@@ -653,6 +664,7 @@ void rfcore_ble_check_msg(int (*cb)(void *, const uint8_t *, size_t), void *env)
         SWAP_UINT8(buf[4], buf[5]);
         tl_ble_hci_cmd_resp(HCI_OPCODE(OGF_VENDOR, OCF_WRITE_CONFIG), buf, 8); // set BDADDR
     }
+    return len;
 }
 
 // "level" is 0x00-0x1f, ranging from -40 dBm to +6 dBm (not linear).
@@ -690,8 +702,7 @@ void IPCC_C1_RX_IRQHandler(void) {
 
         #if MICROPY_PY_BLUETOOTH
         // Queue up the scheduler to process UART data and run events.
-        extern void mp_bluetooth_hci_systick(uint32_t ticks_ms);
-        mp_bluetooth_hci_systick(0);
+        mp_bluetooth_hci_poll_now();
         #endif
     }
 

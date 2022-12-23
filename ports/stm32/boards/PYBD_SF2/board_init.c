@@ -33,7 +33,7 @@
 #else
 #define OTP_ADDR (0x1ff0f3c0)
 #endif
-#define OTP ((pyb_otp_t*)OTP_ADDR)
+#define OTP ((pyb_otp_t *)OTP_ADDR)
 
 typedef struct _pyb_otp_t {
     uint16_t series;
@@ -44,6 +44,11 @@ typedef struct _pyb_otp_t {
 void mboot_board_early_init(void) {
     // Enable 500mA on WBUS-DIP28
     mp_hal_pin_config(pyb_pin_W23, MP_HAL_PIN_MODE_INPUT, MP_HAL_PIN_PULL_UP, 0);
+
+    #if defined(MBOOT_SDCARD_ADDR)
+    // Configure EN_3V3 as an output pin so that SD card can be used
+    mp_hal_pin_config(pyb_pin_EN_3V3, MP_HAL_PIN_MODE_OUTPUT, MP_HAL_PIN_PULL_NONE, 0);
+    #endif
 }
 
 void board_early_init(void) {
@@ -64,7 +69,15 @@ void board_sleep(int value) {
 void mp_hal_get_mac(int idx, uint8_t buf[6]) {
     // Check if OTP region has a valid MAC address, and use it if it does
     if (OTP->series == 0x00d1 && OTP->mac[0] == 'H' && OTP->mac[1] == 'J' && OTP->mac[2] == '0') {
+        #if __GNUC__ >= 11
+        #pragma GCC diagnostic push
+        #pragma GCC diagnostic ignored "-Warray-bounds"
+        #pragma GCC diagnostic ignored "-Wstringop-overread"
+        #endif
         memcpy(buf, OTP->mac, 6);
+        #if __GNUC__ >= 11
+        #pragma GCC diagnostic pop
+        #endif
         buf[5] += idx;
         return;
     }

@@ -24,17 +24,18 @@
  * THE SOFTWARE.
  */
 
-
-#include <stdio.h>
-
-#include "esp_log.h"
-
-#include "driver/gpio.h"
-#include "driver/touch_pad.h"
-
 #include "py/runtime.h"
 #include "py/mphal.h"
 #include "modmachine.h"
+#include "driver/gpio.h"
+
+#if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+
+#if CONFIG_IDF_TARGET_ESP32
+#include "driver/touch_pad.h"
+#elif CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+#include "driver/touch_sensor.h"
+#endif
 
 typedef struct _mtp_obj_t {
     mp_obj_base_t base;
@@ -43,6 +44,7 @@ typedef struct _mtp_obj_t {
 } mtp_obj_t;
 
 STATIC const mtp_obj_t touchpad_obj[] = {
+    #if CONFIG_IDF_TARGET_ESP32
     {{&machine_touchpad_type}, GPIO_NUM_4, TOUCH_PAD_NUM0},
     {{&machine_touchpad_type}, GPIO_NUM_0, TOUCH_PAD_NUM1},
     {{&machine_touchpad_type}, GPIO_NUM_2, TOUCH_PAD_NUM2},
@@ -53,11 +55,26 @@ STATIC const mtp_obj_t touchpad_obj[] = {
     {{&machine_touchpad_type}, GPIO_NUM_27, TOUCH_PAD_NUM7},
     {{&machine_touchpad_type}, GPIO_NUM_33, TOUCH_PAD_NUM8},
     {{&machine_touchpad_type}, GPIO_NUM_32, TOUCH_PAD_NUM9},
+    #elif CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+    {{&machine_touchpad_type}, GPIO_NUM_1, TOUCH_PAD_NUM1},
+    {{&machine_touchpad_type}, GPIO_NUM_2, TOUCH_PAD_NUM2},
+    {{&machine_touchpad_type}, GPIO_NUM_3, TOUCH_PAD_NUM3},
+    {{&machine_touchpad_type}, GPIO_NUM_4, TOUCH_PAD_NUM4},
+    {{&machine_touchpad_type}, GPIO_NUM_5, TOUCH_PAD_NUM5},
+    {{&machine_touchpad_type}, GPIO_NUM_6, TOUCH_PAD_NUM6},
+    {{&machine_touchpad_type}, GPIO_NUM_7, TOUCH_PAD_NUM7},
+    {{&machine_touchpad_type}, GPIO_NUM_8, TOUCH_PAD_NUM8},
+    {{&machine_touchpad_type}, GPIO_NUM_9, TOUCH_PAD_NUM9},
+    {{&machine_touchpad_type}, GPIO_NUM_10, TOUCH_PAD_NUM10},
+    {{&machine_touchpad_type}, GPIO_NUM_11, TOUCH_PAD_NUM11},
+    {{&machine_touchpad_type}, GPIO_NUM_12, TOUCH_PAD_NUM12},
+    {{&machine_touchpad_type}, GPIO_NUM_13, TOUCH_PAD_NUM13},
+    {{&machine_touchpad_type}, GPIO_NUM_14, TOUCH_PAD_NUM14},
+    #endif
 };
 
 STATIC mp_obj_t mtp_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw,
     const mp_obj_t *args) {
-
     mp_arg_check_num(n_args, n_kw, 1, 1, true);
     gpio_num_t pin_id = machine_pin_get_id(args[0]);
     const mtp_obj_t *self = NULL;
@@ -75,9 +92,16 @@ STATIC mp_obj_t mtp_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_
     if (!initialized) {
         touch_pad_init();
         touch_pad_set_fsm_mode(TOUCH_FSM_MODE_TIMER);
+        #if CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+        touch_pad_fsm_start();
+        #endif
         initialized = 1;
     }
+    #if CONFIG_IDF_TARGET_ESP32
     esp_err_t err = touch_pad_config(self->touchpad_id, 0);
+    #elif CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+    esp_err_t err = touch_pad_config(self->touchpad_id);
+    #endif
     if (err == ESP_OK) {
         return MP_OBJ_FROM_PTR(self);
     }
@@ -86,8 +110,12 @@ STATIC mp_obj_t mtp_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_
 
 STATIC mp_obj_t mtp_config(mp_obj_t self_in, mp_obj_t value_in) {
     mtp_obj_t *self = self_in;
+    #if CONFIG_IDF_TARGET_ESP32
     uint16_t value = mp_obj_get_int(value_in);
     esp_err_t err = touch_pad_config(self->touchpad_id, value);
+    #elif CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+    esp_err_t err = touch_pad_config(self->touchpad_id);
+    #endif
     if (err == ESP_OK) {
         return mp_const_none;
     }
@@ -97,8 +125,13 @@ MP_DEFINE_CONST_FUN_OBJ_2(mtp_config_obj, mtp_config);
 
 STATIC mp_obj_t mtp_read(mp_obj_t self_in) {
     mtp_obj_t *self = self_in;
+    #if CONFIG_IDF_TARGET_ESP32
     uint16_t value;
     esp_err_t err = touch_pad_read(self->touchpad_id, &value);
+    #elif CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+    uint32_t value;
+    esp_err_t err = touch_pad_read_raw_data(self->touchpad_id, &value);
+    #endif
     if (err == ESP_OK) {
         return MP_OBJ_NEW_SMALL_INT(value);
     }
@@ -114,9 +147,12 @@ STATIC const mp_rom_map_elem_t mtp_locals_dict_table[] = {
 
 STATIC MP_DEFINE_CONST_DICT(mtp_locals_dict, mtp_locals_dict_table);
 
-const mp_obj_type_t machine_touchpad_type = {
-    { &mp_type_type },
-    .name = MP_QSTR_TouchPad,
-    .make_new = mtp_make_new,
-    .locals_dict = (mp_obj_t)&mtp_locals_dict,
-};
+MP_DEFINE_CONST_OBJ_TYPE(
+    machine_touchpad_type,
+    MP_QSTR_TouchPad,
+    MP_TYPE_FLAG_NONE,
+    make_new, mtp_make_new,
+    locals_dict, &mtp_locals_dict
+    );
+
+#endif

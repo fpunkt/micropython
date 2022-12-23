@@ -33,12 +33,12 @@
 #define MICROPY_HW_HAS_FLASH        (1)
 #define MICROPY_HW_ENABLE_RNG       (1)
 #define MICROPY_HW_ENABLE_RTC       (1)
-#define MICROPY_HW_ENABLE_TIMER     (1)
 #define MICROPY_HW_ENABLE_SERVO     (1)
 #define MICROPY_HW_ENABLE_DAC       (1)
 #define MICROPY_HW_ENABLE_USB       (1)
 #define MICROPY_HW_ENABLE_SDCARD    (1)
 #define MICROPY_HW_ENABLE_MMCARD    (1)
+#define MICROPY_HW_ENABLE_RF_SWITCH (1)
 
 #define MICROPY_BOARD_EARLY_INIT    board_early_init
 #define MICROPY_BOARD_ENTER_STOP    board_sleep(1);
@@ -84,7 +84,7 @@ extern struct _spi_bdev_t spi_bdev;
     (op) == BDEV_IOCTL_NUM_BLOCKS ? (MICROPY_HW_SPIFLASH_SIZE_BITS / 8 / FLASH_BLOCK_SIZE) : \
     (op) == BDEV_IOCTL_INIT ? spi_bdev_ioctl(&spi_bdev, (op), (uint32_t)&spiflash_config) : \
     spi_bdev_ioctl(&spi_bdev, (op), (arg)) \
-)
+    )
 #define MICROPY_HW_BDEV_READBLOCKS(dest, bl, n) spi_bdev_readblocks(&spi_bdev, (dest), (bl), (n))
 #define MICROPY_HW_BDEV_WRITEBLOCKS(src, bl, n) spi_bdev_writeblocks(&spi_bdev, (src), (bl), (n))
 #define MICROPY_HW_BDEV_SPIFLASH_EXTENDED (&spi_bdev) // for extended block protocol
@@ -121,7 +121,7 @@ extern struct _spi_bdev_t spi_bdev2;
 #define MICROPY_HW_UART6_RTS        (pyb_pin_BT_RTS)
 #define MICROPY_HW_UART6_CTS        (pyb_pin_BT_CTS)
 
-// I2C busses
+// I2C buses
 #define MICROPY_HW_I2C1_NAME        "X"
 #define MICROPY_HW_I2C1_SCL         (pyb_pin_X9)
 #define MICROPY_HW_I2C1_SDA         (pyb_pin_X10)
@@ -129,7 +129,7 @@ extern struct _spi_bdev_t spi_bdev2;
 #define MICROPY_HW_I2C2_SCL         (pyb_pin_Y9)
 #define MICROPY_HW_I2C2_SDA         (pyb_pin_Y10)
 
-// SPI busses
+// SPI buses
 #define MICROPY_HW_SPI1_NAME        "X"
 #define MICROPY_HW_SPI1_NSS         (pyb_pin_X5)
 #define MICROPY_HW_SPI1_SCK         (pyb_pin_X6)
@@ -145,7 +145,11 @@ extern struct _spi_bdev_t spi_bdev2;
 #define MICROPY_HW_SPI3_MISO        (pyb_pin_W50)
 #define MICROPY_HW_SPI3_MOSI        (pyb_pin_W46)
 
-// CAN busses
+// I2S buses
+#define MICROPY_HW_I2S1             (1)
+#define MICROPY_HW_I2S2             (1)
+
+// CAN buses
 #define MICROPY_HW_CAN1_NAME        "X"
 #define MICROPY_HW_CAN1_TX          (pyb_pin_X10)
 #define MICROPY_HW_CAN1_RX          (pyb_pin_X9)
@@ -165,16 +169,20 @@ extern struct _spi_bdev_t spi_bdev2;
 #define MICROPY_HW_LED_OFF(pin)     (mp_hal_pin_high(pin))
 
 // SD card
-#define MICROPY_HW_SDMMC2_CK                (pyb_pin_SD_CK)
-#define MICROPY_HW_SDMMC2_CMD               (pyb_pin_SD_CMD)
-#define MICROPY_HW_SDMMC2_D0                (pyb_pin_SD_D0)
-#define MICROPY_HW_SDMMC2_D1                (pyb_pin_SD_D1)
-#define MICROPY_HW_SDMMC2_D2                (pyb_pin_SD_D2)
-#define MICROPY_HW_SDMMC2_D3                (pyb_pin_SD_D3)
+#define MICROPY_HW_SDCARD_SDMMC             (2)
+#define MICROPY_HW_SDCARD_CK                (pyb_pin_SD_CK)
+#define MICROPY_HW_SDCARD_CMD               (pyb_pin_SD_CMD)
+#define MICROPY_HW_SDCARD_D0                (pyb_pin_SD_D0)
+#define MICROPY_HW_SDCARD_D1                (pyb_pin_SD_D1)
+#define MICROPY_HW_SDCARD_D2                (pyb_pin_SD_D2)
+#define MICROPY_HW_SDCARD_D3                (pyb_pin_SD_D3)
 #define MICROPY_HW_SDCARD_DETECT_PIN        (pyb_pin_SD_SW)
 #define MICROPY_HW_SDCARD_DETECT_PULL       (GPIO_PULLUP)
 #define MICROPY_HW_SDCARD_DETECT_PRESENT    (GPIO_PIN_RESET)
 #define MICROPY_HW_SDCARD_MOUNT_AT_BOOT     (0)
+
+// MM card: the size is hard-coded to support the WBUS-EMMC add-on
+#define MICROPY_HW_MMCARD_LOG_BLOCK_NBR     (7469056 + 2048)
 
 // USB config
 #define MICROPY_HW_USB_FS           (1)
@@ -213,5 +221,5 @@ extern struct _spi_bdev_t spi_bdev2;
 #define MBOOT_SPIFLASH2_SPIFLASH    (&spi_bdev2.spiflash)
 #define MBOOT_SPIFLASH2_CONFIG      (&spiflash2_config)
 
-#define MBOOT_BOARD_EARLY_INIT mboot_board_early_init
+#define MBOOT_BOARD_EARLY_INIT(initial_r0) mboot_board_early_init()
 void mboot_board_early_init(void);

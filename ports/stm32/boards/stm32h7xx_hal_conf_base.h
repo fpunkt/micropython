@@ -54,6 +54,7 @@
 #include "stm32h7xx_hal_usart.h"
 #include "stm32h7xx_hal_wwdg.h"
 #include "stm32h7xx_ll_adc.h"
+#include "stm32h7xx_ll_lpuart.h"
 #include "stm32h7xx_ll_pwr.h"
 #include "stm32h7xx_ll_rtc.h"
 #include "stm32h7xx_ll_usart.h"
@@ -99,5 +100,11 @@
 
 // HAL parameter assertions are disabled
 #define assert_param(expr) ((void)0)
+
+// The STM32H7xx HAL defines LPUART1 AF macros without numbers.
+#ifndef GPIO_AF3_LPUART1
+#define GPIO_AF3_LPUART1 GPIO_AF3_LPUART
+#define GPIO_AF8_LPUART1 GPIO_AF8_LPUART
+#endif
 
 #endif // MICROPY_INCLUDED_STM32H7XX_HAL_CONF_BASE_H
