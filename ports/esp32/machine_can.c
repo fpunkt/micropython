@@ -79,7 +79,9 @@ typedef struct machine_can_config_s {
 typedef struct machine_can_obj_s {
     mp_obj_base_t base;
     machine_can_config_t *config;
+#if CAN_USE_IRQ_CALLBACK
     mp_obj_t rxcallback;
+#endif
     //TaskHandle_t receiver_task;
     mp_obj_t received_object;
     mp_obj_t *received_object_items;
@@ -446,6 +448,7 @@ STATIC void machine_hw_can_print(const mp_print_t *print, mp_obj_t self_in, mp_p
     }
 }
 
+#if CAN_USE_IRQ_CALLBACK
 
 static void trigger_mp_schedule() {
     machine_can_obj_t *self = &machine_can_obj;
@@ -472,6 +475,7 @@ STATIC mp_obj_t machine_hw_can_set_callback(mp_obj_t self_in, mp_obj_t value_in)
 }
 MP_DEFINE_CONST_FUN_OBJ_2(can_set_callback_obj, machine_hw_can_set_callback);
 
+
 STATIC mp_obj_t machine_hw_can_get_callback(mp_obj_t self_in) {
     machine_can_obj_t *self = self_in;
     if (self->rxcallback == 0) self->rxcallback = mp_const_none;
@@ -479,6 +483,7 @@ STATIC mp_obj_t machine_hw_can_get_callback(mp_obj_t self_in) {
     return self->rxcallback;
 }
 MP_DEFINE_CONST_FUN_OBJ_1(can_get_callback_obj, machine_hw_can_get_callback);
+#endif
 
 // init(tx, rx, baudrate, mode = TWAI_MODE_NORMAL, tx_queue = 2, rx_queue = 5)
 STATIC mp_obj_t machine_hw_can_init(size_t n_args, const mp_obj_t *args, mp_map_t *kw_args) {
@@ -516,13 +521,14 @@ mp_obj_t machine_hw_can_make_new(const mp_obj_type_t *type, size_t n_args,
         mp_raise_TypeError("bus must be a number");
     }
 
+#if CAN_USE_IRQ_CALLBACK
 #if TWAI_RECEIVE_ISR_HOOK
     // disable interrupt catcher
     extern void (*twai_receive_isr_hook)();
     twai_receive_isr_hook = 0;
 #endif
     machine_can_obj.rxcallback = mp_const_none;
-
+#endif
 
     mp_uint_t can_idx = mp_obj_get_int(args[0]);
 
@@ -587,7 +593,9 @@ STATIC mp_obj_t machine_hw_can_init_helper(machine_can_obj_t *self, size_t n_arg
         { MP_QSTR_rx_queue, MP_ARG_INT, {.u_int = 5} },
         { MP_QSTR_auto_restart, MP_ARG_BOOL, {.u_bool = false} },
     };
+#if CAN_USE_IRQ_CALLBACK
     self->rxcallback = mp_const_none; // disable callback
+#endif
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
@@ -655,10 +663,21 @@ STATIC mp_obj_t machine_hw_can_init_helper(machine_can_obj_t *self, size_t n_arg
     self->config->timing = *timing;
     self->config->baudrate = args[ARG_baudrate].u_int;
 
+
     uint32_t status = twai_driver_install(
                           &self->config->general,
                           &self->config->timing,
                           &(twai_filter_config_t) TWAI_FILTER_CONFIG_ACCEPT_ALL() );
+    static bool first_call = 1;
+    if (!first_call && status != ESP_OK) {
+        ESP_LOGW(DEVICE_NAME, "Cannot initialize CAN, maybe reboot, ignoring.");
+        ESP_LOGE(DEVICE_NAME, "Cannot initialize CAN, maybe reboot, ignoring.");
+        twai_start();
+        self->config->initialized = true;
+        return mp_const_none;
+    }
+    first_call = 0;
+
     if (status != ESP_OK) {
         mp_raise_OSError(-status);
     } else {
@@ -678,9 +697,10 @@ STATIC const mp_rom_map_elem_t machine_can_locals_dict_table[] = {
     // CAN_ATTRIBUTES
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_CAN) },
     // Micropython Generic API
+#if CAN_USE_IRQ_CALLBACK
     { MP_ROM_QSTR(MP_QSTR_callback), MP_ROM_PTR(&can_set_callback_obj) },
     { MP_ROM_QSTR(MP_QSTR_gcallback), MP_ROM_PTR(&can_get_callback_obj) },
-
+#endif
     { MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&machine_hw_can_init_obj) },
     { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&machine_hw_can_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR_restart), MP_ROM_PTR(&machine_hw_can_restart_obj) },
@@ -733,7 +753,13 @@ MP_DEFINE_CONST_OBJ_TYPE(
     locals_dict, &machine_can_locals_dict
 );
 
-STATIC machine_can_obj_t machine_can_obj = { {&machine_can_type}, .config = &can_config, .rxcallback = 0 };
+STATIC machine_can_obj_t machine_can_obj = {
+    {&machine_can_type},
+#if CAN_USE_IRQ_CALLBACK
+    .rxcallback = 0,
+#endif
+    .config = &can_config,
+     };
 
 
 // #endif // MICROPY_HW_ENABLE_CAN
